@@ -23,8 +23,8 @@ BASE_MOVEMENTS = [
     ["B"],  # 12: Run only
 ]
 
-# Jump durations (frames to hold A button)
-JUMP_DURATIONS = [1, 4, 8, 12, 16, 20]  # Different jump heights
+# Jump durations (frames to hold A button) - this actually controls jump height
+JUMP_DURATIONS = [1, 3, 6, 10, 15, 20, 25, 30]  # Different jump heights
 NUM_BASE_ACTIONS = len(BASE_MOVEMENTS)
 
 # Create expanded action space by encoding jump duration into action index
@@ -44,7 +44,7 @@ print(f"  Jump durations: {JUMP_DURATIONS}")
 
 # Genetic Algorithm Parameters
 POPULATION_SIZE = 20
-SEQUENCE_LENGTH = 2000
+SEQUENCE_LENGTH = 300  # Reduced since each action now takes multiple frames
 MUTATION_RATE = 0.3
 ELITE_SIZE = 10
 
@@ -60,6 +60,7 @@ class MarioIndividual:
         self.fitness = 0
         self.max_x = 0
         self.steps_survived = 0
+        self.total_frames = 0  # Track actual game frames
 
     def mutate(self, mutation_rate=MUTATION_RATE):
         for i in range(len(self.genome)):
@@ -77,6 +78,7 @@ class MarioIndividual:
         new_individual.fitness = self.fitness
         new_individual.max_x = self.max_x
         new_individual.steps_survived = self.steps_survived
+        new_individual.total_frames = self.total_frames
         return new_individual
 
 
@@ -88,29 +90,24 @@ def evaluate_fitness(individual, render=False):
         print("The window may open behind your terminal. Check your taskbar.")
         time.sleep(2)
 
-    # For rendering, we need to create the environment differently
     try:
         if render:
-            # Try with render_mode first (newer versions)
             env = gym_super_mario_bros.make(
                 "SuperMarioBros-1-1-v0", render_mode="human"
             )
         else:
             env = gym_super_mario_bros.make("SuperMarioBros-1-1-v0")
     except TypeError:
-        # Fall back to old way
         env = gym_super_mario_bros.make("SuperMarioBros-1-1-v0")
 
-    # Use original movements for the environment
     env = JoypadSpace(env, BASE_MOVEMENTS)
 
     obs = env.reset()
     done = False
-    step = 0
-    total_reward = 0
+    action_index = 0  # Track which action in the genome we're on
+    total_frames = 0  # Track total game frames
     max_x = 0
 
-    # Force initial render if requested
     if render:
         try:
             env.render()
@@ -118,42 +115,73 @@ def evaluate_fitness(individual, render=False):
             pass
 
     try:
-        while not done and step < len(individual.genome):
+        while not done and action_index < len(individual.genome):
             # Get the encoded action
-            encoded_action = individual.genome[step]
+            encoded_action = individual.genome[action_index]
             action_info = MOVEMENTS[encoded_action]
 
             # Extract base action and find its index
             base_action = action_info["base"]
+            jump_duration = action_info["jump_duration"]
             base_idx = BASE_MOVEMENTS.index(base_action)
 
-            # Take the action
-            obs, reward, done, info = env.step(base_idx)
-            total_reward += reward
+            if jump_duration > 0:
+                # THIS IS THE KEY - Hold the button for jump_duration frames
+                jump_height = "LOW"
+                if jump_duration > 20:
+                    jump_height = "VERY HIGH"
+                elif jump_duration > 12:
+                    jump_height = "HIGH"
+                elif jump_duration > 6:
+                    jump_height = "MEDIUM"
 
-            # Track progress
-            x_pos = info.get("x_pos", 0)
-            if isinstance(x_pos, list):
-                x_pos = x_pos[0] if x_pos else 0
-
-            if x_pos > max_x:
-                max_x = x_pos
-
-            step += 1
-
-            # Render if requested
-            if render:
-                env.render()
-                time.sleep(0.02)  # Small delay to make it viewable
-
-                # Print progress occasionally
-                if step % 50 == 0:
-                    jump_info = (
-                        f" (jump:{action_info['jump_duration']})"
-                        if action_info["jump_duration"] > 0
-                        else ""
+                if render and jump_duration > 0:
+                    print(
+                        f"\n  Action {action_index}: {base_action} - {jump_height} JUMP (holding for {jump_duration} frames)"
                     )
-                    print(f"  Step {step:3d}: Position {x_pos:3d}{jump_info}")
+
+                # Hold the jump for the specified duration
+                for frame in range(jump_duration):
+                    obs, reward, done, info = env.step(base_idx)
+                    total_frames += 1
+
+                    # Track progress
+                    x_pos = info.get("x_pos", 0)
+                    if isinstance(x_pos, list):
+                        x_pos = x_pos[0] if x_pos else 0
+                    if x_pos > max_x:
+                        max_x = x_pos
+
+                    if render:
+                        env.render()
+                        time.sleep(0.02)  # Make it viewable
+
+                    if done:
+                        break
+            else:
+                # Non-jump action - just do it once
+                if render:
+                    print(f"\n  Action {action_index}: {base_action}")
+
+                obs, reward, done, info = env.step(base_idx)
+                total_frames += 1
+
+                x_pos = info.get("x_pos", 0)
+                if isinstance(x_pos, list):
+                    x_pos = x_pos[0] if x_pos else 0
+                if x_pos > max_x:
+                    max_x = x_pos
+
+                if render:
+                    env.render()
+                    time.sleep(0.02)
+
+            action_index += 1  # Move to next action in genome
+
+            if render and action_index % 10 == 0:
+                print(
+                    f"  Progress: Action {action_index}/{len(individual.genome)}, Position: {x_pos}"
+                )
 
     except KeyboardInterrupt:
         if render:
@@ -162,16 +190,19 @@ def evaluate_fitness(individual, render=False):
         env.close()
 
         if render:
-            print(f"\nGame Over - Steps: {step}, Max Position: {max_x}")
+            print(
+                f"\nGame Over - Actions: {action_index}, Frames: {total_frames}, Max Position: {max_x}"
+            )
             time.sleep(2)
 
     # Update stats only in non-render mode
     if not render:
-        individual.fitness = max_x + step * 0.1
+        individual.fitness = max_x + action_index * 0.1
         individual.max_x = max_x
-        individual.steps_survived = step
+        individual.steps_survived = action_index
+        individual.total_frames = total_frames
 
-    return max_x + step * 0.1
+    return max_x + action_index * 0.1
 
 
 def create_initial_population(size):
@@ -219,14 +250,20 @@ def print_best_individual(individual, generation):
     print(f"{'=' * 60}")
     print(f"Fitness: {individual.fitness:.2f}")
     print(f"Distance: {individual.max_x} units")
-    print(f"Steps Survived: {individual.steps_survived}")
+    print(f"Actions Taken: {individual.steps_survived}")
+    print(f"Total Game Frames: {individual.total_frames}")
+    print(
+        f"Avg Frames per Action: {individual.total_frames / individual.steps_survived:.1f}"
+    )
 
     if jump_heights:
         avg_jump = sum(jump_heights) / len(jump_heights)
         max_jump = max(jump_heights)
+        min_jump = min(jump_heights)
         print(f"\nJump Analysis:")
         print(f"  Average Jump Duration: {avg_jump:.1f} frames")
         print(f"  Maximum Jump Duration: {max_jump} frames")
+        print(f"  Minimum Jump Duration: {min_jump} frames")
         print(f"  Total Jumps: {len(jump_heights)}")
 
     print(f"\nTop 5 Actions Used in First 50 Steps:")
@@ -243,7 +280,9 @@ def print_best_individual(individual, generation):
         jump_duration = action_info["jump_duration"]
 
         if jump_duration > 0:
-            if jump_duration > 12:
+            if jump_duration > 20:
+                print("V", end="")  # Very High jump
+            elif jump_duration > 12:
                 print("H", end="")  # High jump
             elif jump_duration > 6:
                 print("M", end="")  # Medium jump
@@ -258,11 +297,11 @@ def print_best_individual(individual, generation):
         elif base_action == ["A"]:
             print("^", end="")
         elif base_action == ["B"]:
-            print("R", end="")  # Run
+            print("R", end="")
         elif base_action == ["right", "B"]:
-            print("+", end="")  # Right+run
+            print("+", end="")
         elif base_action == ["right", "A", "B"]:
-            print("#", end="")  # Right+jump+run
+            print("#", end="")
         else:
             print("?", end="")
     print()
@@ -272,11 +311,11 @@ def run_genetic_algorithm(generations=50):
     """Main genetic algorithm loop"""
     print("=" * 60)
     print("SUPER MARIO BROS - GENETIC PROGRAMMING")
-    print("WITH VARIABLE JUMP HEIGHTS")
+    print("WITH VARIABLE JUMP HEIGHTS (ACTUALLY VARIED)")
     print("=" * 60)
 
     print(f"\nPopulation Size: {POPULATION_SIZE}")
-    print(f"Genome Length: {SEQUENCE_LENGTH} moves")
+    print(f"Genome Length: {SEQUENCE_LENGTH} actions")
     print(f"Mutation Rate: {MUTATION_RATE * 100}%")
     print(f"Jump Durations: {JUMP_DURATIONS} frames")
     print(f"Total Actions: {len(MOVEMENTS)}")
@@ -319,7 +358,6 @@ def run_genetic_algorithm(generations=50):
         if (generation + 1) % 10 == 0:
             print_best_individual(best_individual, generation + 1)
 
-            # Only ask to play if we're in the last 10 generations or user wants to
             if generations - generation <= 10:
                 response = input(f"\nShow best individual playing? (y/n): ").lower()
                 if response == "y":
