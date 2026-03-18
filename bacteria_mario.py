@@ -22,12 +22,12 @@ MOVEMENTS = [
 ]
 
 # Genetic Algorithm Parameters
-POPULATION_SIZE = 100
+POPULATION_SIZE = 20
 SEQUENCE_LENGTH = (
-    1000  # Number of moves in each individual's genome, probably more than we need
+    100  # Number of moves in each individual's genome, probably more than we need
 )
-MUTATION_RATE = 0.1  # Probability of mutating each gene
-ELITE_SIZE = 50  # Number of top individuals to keep (kill bottom 50)
+MUTATION_RATE = 0.3  # Probability of mutating each gene
+ELITE_SIZE = 10  # Number of top individuals to keep (kill bottom 50)
 
 
 class MarioIndividual:
@@ -225,7 +225,7 @@ def run_genetic_algorithm(generations=100):
         population = create_next_generation(survivors, POPULATION_SIZE)
 
         # Every 10 generations, show the best individual in action
-        if (generation + 1) % 2 == 0:
+        if (generation + 1) % 10 == 0:
             print_best_individual(best_individual, generation + 1)
 
             # Optional: Show the best individual playing
@@ -255,6 +255,6 @@ def run_genetic_algorithm(generations=100):
 
 if __name__ == "__main__":
     # Run the genetic algorithm
-    best_mario = run_genetic_algorithm(generations=2)
+    best_mario = run_genetic_algorithm(generations=20)
 
     print("\nSimulations Complete, chud")
