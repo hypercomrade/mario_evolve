@@ -1,6 +1,9 @@
 import copy
+import os
+import pickle
 import random
 import time
+from datetime import datetime
 
 import gym_super_mario_bros
 import numpy as np
@@ -23,11 +26,11 @@ BASE_MOVEMENTS = [
     ["B"],  # 12: Run only
 ]
 
-# Jump durations (frames to hold A button) - this actually controls jump height
-JUMP_DURATIONS = [1, 3, 6, 10, 15, 20, 25, 30]  # Different jump heights
+# Jump durations (frames to hold A button)
+JUMP_DURATIONS = [1, 3, 6, 10, 15, 20, 25, 30]
 NUM_BASE_ACTIONS = len(BASE_MOVEMENTS)
 
-# Create expanded action space by encoding jump duration into action index
+# Create expanded action space
 MOVEMENTS = []
 for duration in JUMP_DURATIONS:
     for base_action in BASE_MOVEMENTS:
@@ -38,15 +41,22 @@ for duration in JUMP_DURATIONS:
             }
         )
 
+# Identify backward-moving actions (left, left+A, left+B, left+A+B)
+BACKWARD_ACTIONS = []
+for i, action in enumerate(MOVEMENTS):
+    base = action["base"]
+    if base and base[0] == "left":  # Any action starting with "left" is backward
+        BACKWARD_ACTIONS.append(i)
+
 print(f"Created {len(MOVEMENTS)} actions with variable jump heights")
-print(f"  Base actions: {NUM_BASE_ACTIONS}")
-print(f"  Jump durations: {JUMP_DURATIONS}")
+print(f"  Backward actions: {len(BACKWARD_ACTIONS)} (will be mutated less frequently)")
 
 # Genetic Algorithm Parameters
 POPULATION_SIZE = 20
-SEQUENCE_LENGTH = 300  # Reduced since each action now takes multiple frames
+SEQUENCE_LENGTH = 300
 MUTATION_RATE = 0.3
 ELITE_SIZE = 10
+BACKWARD_MUTATION_PENALTY = 0.5  # Half as likely to mutate to backward moves
 
 
 class MarioIndividual:
@@ -60,12 +70,24 @@ class MarioIndividual:
         self.fitness = 0
         self.max_x = 0
         self.steps_survived = 0
-        self.total_frames = 0  # Track actual game frames
+        self.total_frames = 0
+        self.generation = 0
+        self.id = random.randint(10000, 99999)
 
     def mutate(self, mutation_rate=MUTATION_RATE):
+        """Mutate with bias against backward moves"""
         for i in range(len(self.genome)):
             if random.random() < mutation_rate:
-                self.genome[i] = random.randint(0, len(MOVEMENTS) - 1)
+                # Decide whether to allow backward moves
+                if random.random() < BACKWARD_MUTATION_PENALTY:
+                    # Bias toward forward/neutral moves - exclude backward actions
+                    valid_actions = [
+                        a for a in range(len(MOVEMENTS)) if a not in BACKWARD_ACTIONS
+                    ]
+                    self.genome[i] = random.choice(valid_actions)
+                else:
+                    # Normal mutation - any action possible
+                    self.genome[i] = random.randint(0, len(MOVEMENTS) - 1)
         return self
 
     def crossover(self, other):
@@ -79,15 +101,21 @@ class MarioIndividual:
         new_individual.max_x = self.max_x
         new_individual.steps_survived = self.steps_survived
         new_individual.total_frames = self.total_frames
+        new_individual.generation = self.generation
+        new_individual.id = self.id
         return new_individual
 
+    def save(self, filename):
+        """Save individual to file"""
+        with open(filename, "wb") as f:
+            pickle.dump(self, f)
+        print(f"  Saved individual to {filename}")
 
-def evaluate_fitness(individual, render=False):
+
+def evaluate_fitness(individual, render=False, record=False):
     """Evaluate how far Mario gets with this individual's action sequence"""
-    # Create environment with rendering if requested
     if render:
         print("\n🎮 Opening Mario game window...")
-        print("The window may open behind your terminal. Check your taskbar.")
         time.sleep(2)
 
     try:
@@ -104,9 +132,12 @@ def evaluate_fitness(individual, render=False):
 
     obs = env.reset()
     done = False
-    action_index = 0  # Track which action in the genome we're on
-    total_frames = 0  # Track total game frames
+    action_index = 0
+    total_frames = 0
     max_x = 0
+
+    # For recording
+    frames = [] if record else None
 
     if render:
         try:
@@ -116,36 +147,33 @@ def evaluate_fitness(individual, render=False):
 
     try:
         while not done and action_index < len(individual.genome):
-            # Get the encoded action
             encoded_action = individual.genome[action_index]
             action_info = MOVEMENTS[encoded_action]
 
-            # Extract base action and find its index
             base_action = action_info["base"]
             jump_duration = action_info["jump_duration"]
             base_idx = BASE_MOVEMENTS.index(base_action)
 
             if jump_duration > 0:
-                # THIS IS THE KEY - Hold the button for jump_duration frames
-                jump_height = "LOW"
-                if jump_duration > 20:
-                    jump_height = "VERY HIGH"
-                elif jump_duration > 12:
-                    jump_height = "HIGH"
-                elif jump_duration > 6:
-                    jump_height = "MEDIUM"
-
                 if render and jump_duration > 0:
+                    jump_height = "LOW"
+                    if jump_duration > 20:
+                        jump_height = "VERY HIGH"
+                    elif jump_duration > 12:
+                        jump_height = "HIGH"
+                    elif jump_duration > 6:
+                        jump_height = "MEDIUM"
                     print(
-                        f"\n  Action {action_index}: {base_action} - {jump_height} JUMP (holding for {jump_duration} frames)"
+                        f"\n  Action {action_index}: {base_action} - {jump_height} JUMP"
                     )
 
-                # Hold the jump for the specified duration
                 for frame in range(jump_duration):
                     obs, reward, done, info = env.step(base_idx)
                     total_frames += 1
 
-                    # Track progress
+                    if record:
+                        frames.append(obs.copy())
+
                     x_pos = info.get("x_pos", 0)
                     if isinstance(x_pos, list):
                         x_pos = x_pos[0] if x_pos else 0
@@ -154,17 +182,19 @@ def evaluate_fitness(individual, render=False):
 
                     if render:
                         env.render()
-                        time.sleep(0.02)  # Make it viewable
+                        time.sleep(0.02)
 
                     if done:
                         break
             else:
-                # Non-jump action - just do it once
                 if render:
                     print(f"\n  Action {action_index}: {base_action}")
 
                 obs, reward, done, info = env.step(base_idx)
                 total_frames += 1
+
+                if record:
+                    frames.append(obs.copy())
 
                 x_pos = info.get("x_pos", 0)
                 if isinstance(x_pos, list):
@@ -176,12 +206,10 @@ def evaluate_fitness(individual, render=False):
                     env.render()
                     time.sleep(0.02)
 
-            action_index += 1  # Move to next action in genome
+            action_index += 1
 
             if render and action_index % 10 == 0:
-                print(
-                    f"  Progress: Action {action_index}/{len(individual.genome)}, Position: {x_pos}"
-                )
+                print(f"  Progress: {action_index}/{len(individual.genome)}")
 
     except KeyboardInterrupt:
         if render:
@@ -190,10 +218,7 @@ def evaluate_fitness(individual, render=False):
         env.close()
 
         if render:
-            print(
-                f"\nGame Over - Actions: {action_index}, Frames: {total_frames}, Max Position: {max_x}"
-            )
-            time.sleep(2)
+            print(f"\nGame Over - Position: {max_x}")
 
     # Update stats only in non-render mode
     if not render:
@@ -202,7 +227,7 @@ def evaluate_fitness(individual, render=False):
         individual.steps_survived = action_index
         individual.total_frames = total_frames
 
-    return max_x + action_index * 0.1
+    return max_x + action_index * 0.1, frames
 
 
 def create_initial_population(size):
@@ -214,23 +239,60 @@ def select_survivors(population, elite_size):
     return sorted_pop[:elite_size]
 
 
-def create_next_generation(survivors, population_size):
-    next_generation = [s.copy() for s in survivors]
+def create_next_generation(survivors, population_size, current_gen):
+    next_generation = []
 
+    # Keep elites
+    for s in survivors:
+        elite_copy = s.copy()
+        elite_copy.generation = current_gen
+        next_generation.append(elite_copy)
+
+    # Fill the rest with offspring
     while len(next_generation) < population_size:
         parent1 = random.choice(survivors)
         parent2 = random.choice(survivors)
         child = parent1.crossover(parent2)
         child.mutate()
+        child.generation = current_gen
+        child.id = random.randint(10000, 99999)
         next_generation.append(child)
 
     return next_generation
+
+
+def save_best_individual(individual, generation, fitness_history):
+    """Save the best individual and its stats"""
+    # Create saves directory if it doesn't exist
+    os.makedirs("saves", exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Save the individual
+    filename = f"saves/best_gen_{generation}_{timestamp}.pkl"
+    individual.save(filename)
+
+    # Save stats
+    stats_filename = f"saves/best_gen_{generation}_{timestamp}_stats.txt"
+    with open(stats_filename, "w") as f:
+        f.write(f"Generation: {generation}\n")
+        f.write(f"Fitness: {individual.fitness:.2f}\n")
+        f.write(f"Distance: {individual.max_x}\n")
+        f.write(f"Actions Taken: {individual.steps_survived}\n")
+        f.write(f"Total Frames: {individual.total_frames}\n")
+        f.write(f"\nFitness History:\n")
+        for i, fit in enumerate(fitness_history):
+            f.write(f"  Gen {i + 1}: {fit:.2f}\n")
+
+    print(f"  Saved stats to {stats_filename}")
+    return filename
 
 
 def print_best_individual(individual, generation):
     """Print details of the best individual"""
     action_counts = {}
     jump_heights = []
+    backward_count = 0
 
     for action_idx in individual.genome[: min(50, individual.steps_survived)]:
         action_info = MOVEMENTS[action_idx]
@@ -245,16 +307,18 @@ def print_best_individual(individual, generation):
         if jump_duration > 0:
             jump_heights.append(jump_duration)
 
+        # Count backward moves
+        if base_action and base_action.startswith("left"):
+            backward_count += 1
+
     print(f"\n{'=' * 60}")
-    print(f"GENERATION {generation} - BEST INDIVIDUAL")
+    print(f"GENERATION {generation} - BEST INDIVIDUAL (ID: {individual.id})")
     print(f"{'=' * 60}")
     print(f"Fitness: {individual.fitness:.2f}")
     print(f"Distance: {individual.max_x} units")
     print(f"Actions Taken: {individual.steps_survived}")
     print(f"Total Game Frames: {individual.total_frames}")
-    print(
-        f"Avg Frames per Action: {individual.total_frames / individual.steps_survived:.1f}"
-    )
+    print(f"Backward Moves (first 50): {backward_count}")
 
     if jump_heights:
         avg_jump = sum(jump_heights) / len(jump_heights)
@@ -271,7 +335,7 @@ def print_best_individual(individual, generation):
     for action, count in sorted_actions:
         print(f"  {action}: {count} times")
 
-    # Show first 20 actions with simple ASCII
+    # Show first 20 actions
     print(f"\nFirst 20 Actions: ", end="")
     for i in range(min(20, individual.steps_survived)):
         action_idx = individual.genome[i]
@@ -281,13 +345,13 @@ def print_best_individual(individual, generation):
 
         if jump_duration > 0:
             if jump_duration > 20:
-                print("V", end="")  # Very High jump
+                print("V", end="")
             elif jump_duration > 12:
-                print("H", end="")  # High jump
+                print("H", end="")
             elif jump_duration > 6:
-                print("M", end="")  # Medium jump
+                print("M", end="")
             else:
-                print("L", end="")  # Low jump
+                print("L", end="")
         elif base_action == ["right"]:
             print(">", end="")
         elif base_action == ["left"]:
@@ -311,12 +375,13 @@ def run_genetic_algorithm(generations=50):
     """Main genetic algorithm loop"""
     print("=" * 60)
     print("SUPER MARIO BROS - GENETIC PROGRAMMING")
-    print("WITH VARIABLE JUMP HEIGHTS (ACTUALLY VARIED)")
+    print("WITH BIASED MUTATION AGAINST BACKWARD MOVES")
     print("=" * 60)
 
     print(f"\nPopulation Size: {POPULATION_SIZE}")
     print(f"Genome Length: {SEQUENCE_LENGTH} actions")
     print(f"Mutation Rate: {MUTATION_RATE * 100}%")
+    print(f"Backward Mutation Penalty: {BACKWARD_MUTATION_PENALTY * 100}% less likely")
     print(f"Jump Durations: {JUMP_DURATIONS} frames")
     print(f"Total Actions: {len(MOVEMENTS)}")
     print(f"Generations: {generations}")
@@ -332,7 +397,7 @@ def run_genetic_algorithm(generations=50):
 
         fitnesses = []
         for i, individual in enumerate(population):
-            fitness = evaluate_fitness(individual, render=False)
+            fitness, _ = evaluate_fitness(individual, render=False)
             fitnesses.append(fitness)
 
             if (i + 1) % 5 == 0:
@@ -340,6 +405,7 @@ def run_genetic_algorithm(generations=50):
 
         best_idx = np.argmax(fitnesses)
         best_individual = population[best_idx].copy()
+        best_individual.generation = generation + 1
         best_fitness = fitnesses[best_idx]
         best_fitness_history.append(best_fitness)
         best_individual_history.append(best_individual)
@@ -353,10 +419,13 @@ def run_genetic_algorithm(generations=50):
         survivors = select_survivors(population, ELITE_SIZE)
         print(f"    Survivors: {len(survivors)}")
 
-        population = create_next_generation(survivors, POPULATION_SIZE)
+        population = create_next_generation(survivors, POPULATION_SIZE, generation + 2)
 
         if (generation + 1) % 10 == 0:
             print_best_individual(best_individual, generation + 1)
+
+            # Auto-save every 10 generations
+            save_best_individual(best_individual, generation + 1, best_fitness_history)
 
             if generations - generation <= 10:
                 response = input(f"\nShow best individual playing? (y/n): ").lower()
@@ -375,20 +444,45 @@ def run_genetic_algorithm(generations=50):
     for i, fitness in enumerate(best_fitness_history):
         print(f"  Gen {i + 1}: {fitness:.2f}")
 
+    # Save final best
+    saved_file = save_best_individual(final_best, "FINAL", best_fitness_history)
+
     print(f"\n{'=' * 60}")
-    print("PLAYING FINAL BEST INDIVIDUAL")
+    print("PLAYING AND RECORDING FINAL BEST INDIVIDUAL")
     print("=" * 60)
-    print("\nPress Enter to watch the final evolved Mario...")
+    print("\nPress Enter to watch and record the final evolved Mario...")
     input()
 
     render_individual = final_best.copy()
-    evaluate_fitness(render_individual, render=True)
+    fitness, frames = evaluate_fitness(render_individual, render=True, record=True)
+
+    # Save frames if we want to create a video later
+    if frames:
+        frames_file = (
+            f"saves/final_best_frames_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+        )
+        with open(frames_file, "wb") as f:
+            pickle.dump(frames, f)
+        print(f"\nSaved {len(frames)} frames to {frames_file}")
+        print("You can use these frames to create a video with OpenCV later.")
+
+    print(f"\nBest individual saved to: {saved_file}")
+    print("\nSimulations Complete")
 
     return final_best
 
 
+def load_best_individual(filename):
+    """Load a saved individual"""
+    with open(filename, "rb") as f:
+        individual = pickle.load(f)
+    print(f"Loaded individual from {filename}")
+    print(f"  Generation: {individual.generation}")
+    print(f"  Fitness: {individual.fitness:.2f}")
+    print(f"  Distance: {individual.max_x}")
+    return individual
+
+
 if __name__ == "__main__":
     # Run the genetic algorithm
-    best_mario = run_genetic_algorithm(generations=10)
-
-    print("\nSimulations Complete")
+    best_mario = run_genetic_algorithm(generations=50)
