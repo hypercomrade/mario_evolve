@@ -16,10 +16,6 @@ BASE_MOVEMENTS = [
     ["right", "A"],  # 2: Walk right + jump
     ["right", "B"],  # 3: Walk right + run
     ["right", "A", "B"],  # 4: Walk right + jump + run
-    ["left"],  # 5: Walk left
-    ["left", "A"],  # 6: Walk left + jump
-    ["left", "B"],  # 7: Walk left + run
-    ["left", "A", "B"],  # 8: Walk left + jump + run
     ["down"],  # 9: Crouch
     ["up"],  # 10: Look up
     ["A"],  # 11: Jump only
@@ -41,23 +37,13 @@ for duration in JUMP_DURATIONS:
             }
         )
 
-# Identify backward-moving actions (left, left+A, left+B, left+A+B)
-BACKWARD_ACTIONS = []
-for i, action in enumerate(MOVEMENTS):
-    base = action["base"]
-    if base and base[0] == "left":  # Any action starting with "left" is backward
-        BACKWARD_ACTIONS.append(i)
-
 print(f"Created {len(MOVEMENTS)} actions with variable jump heights")
-print(f"  Backward actions: {len(BACKWARD_ACTIONS)} (will be mutated less frequently)")
 
 # Genetic Algorithm Parameters
 POPULATION_SIZE = 20
 SEQUENCE_LENGTH = 300
 MUTATION_RATE = 0.3
 ELITE_SIZE = 10
-BACKWARD_MUTATION_PENALTY = 0.5  # Half as likely to mutate to backward moves
-
 
 class MarioIndividual:
     def __init__(self, genome=None):
@@ -79,15 +65,7 @@ class MarioIndividual:
         for i in range(len(self.genome)):
             if random.random() < mutation_rate:
                 # Decide whether to allow backward moves
-                if random.random() < BACKWARD_MUTATION_PENALTY:
-                    # Bias toward forward/neutral moves - exclude backward actions
-                    valid_actions = [
-                        a for a in range(len(MOVEMENTS)) if a not in BACKWARD_ACTIONS
-                    ]
-                    self.genome[i] = random.choice(valid_actions)
-                else:
-                    # Normal mutation - any action possible
-                    self.genome[i] = random.randint(0, len(MOVEMENTS) - 1)
+                self.genome[i] = random.randint(0, len(MOVEMENTS) - 1)
         return self
 
     def crossover(self, other):
@@ -381,7 +359,6 @@ def run_genetic_algorithm(generations=50):
     print(f"\nPopulation Size: {POPULATION_SIZE}")
     print(f"Genome Length: {SEQUENCE_LENGTH} actions")
     print(f"Mutation Rate: {MUTATION_RATE * 100}%")
-    print(f"Backward Mutation Penalty: {BACKWARD_MUTATION_PENALTY * 100}% less likely")
     print(f"Jump Durations: {JUMP_DURATIONS} frames")
     print(f"Total Actions: {len(MOVEMENTS)}")
     print(f"Generations: {generations}")
@@ -485,4 +462,4 @@ def load_best_individual(filename):
 
 if __name__ == "__main__":
     # Run the genetic algorithm
-    best_mario = run_genetic_algorithm(generations=50)
+    best_mario = run_genetic_algorithm(generations=20)
