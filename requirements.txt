@@ -1,11 +1,12 @@
+python==3.10
 cloudpickle==3.1.2
 Farama-Notifications==0.0.4
 gym==0.25.2
 gym-notices==0.1.0
 gym-super-mario-bros==7.4.0
 nes_py==8.2.1
+packaging
 numpy==1.24.3
-packaging @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_packaging_1769093650/work
 pyglet==1.5.21
 tqdm==4.67.3
 typing_extensions==4.15.0
