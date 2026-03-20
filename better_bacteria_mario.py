@@ -58,6 +58,19 @@ MUTATION_RATE = 0.3
 ELITE_SIZE = 10
 BACKWARD_MUTATION_PENALTY = 0.5  # Half as likely to mutate to backward moves
 
+# Structural mutation parameters
+STRUCTURAL_MUTATION_RATE = 0.15  # Chance for structural mutation per individual
+MAX_DELETE_SIZE = 5  # Maximum number of moves to delete
+MAX_INSERT_SIZE = 5  # Maximum number of moves to insert
+MIN_GENOME_LENGTH = 50  # Minimum allowed genome length
+MAX_GENOME_LENGTH = 600  # Maximum allowed genome length
+
+# Fitness weighting parameters
+DISTANCE_WEIGHT = 0.5  # Weight for distance traveled
+SPEED_WEIGHT = 1.0  # Weight for speed (distance per action)
+COMPLETION_BONUS = 1000  # Bonus for completing the level
+MIN_SPEED_BONUS = 0.1  # Minimum speed bonus to avoid division by zero
+
 
 class MarioIndividual:
     def __init__(self, genome=None):
@@ -71,11 +84,17 @@ class MarioIndividual:
         self.max_x = 0
         self.steps_survived = 0
         self.total_frames = 0
+        self.speed_score = 0  # Track speed component separately
         self.generation = 0
         self.id = random.randint(10000, 99999)
 
     def mutate(self, mutation_rate=MUTATION_RATE):
-        """Mutate with bias against backward moves"""
+        """Mutate with bias against backward moves and structural mutations"""
+        # First, decide if this individual gets a structural mutation
+        if random.random() < STRUCTURAL_MUTATION_RATE:
+            self.structural_mutation()
+
+        # Then apply point mutations
         for i in range(len(self.genome)):
             if random.random() < mutation_rate:
                 # Decide whether to allow backward moves
@@ -90,9 +109,48 @@ class MarioIndividual:
                     self.genome[i] = random.randint(0, len(MOVEMENTS) - 1)
         return self
 
+    def structural_mutation(self):
+        """Apply structural mutations: delete or insert chunks of moves"""
+        mutation_type = random.choice(["delete", "insert"])
+
+        if mutation_type == "delete" and len(self.genome) > MIN_GENOME_LENGTH:
+            # Delete 1-5 consecutive moves
+            delete_size = random.randint(1, MAX_DELETE_SIZE)
+            if len(self.genome) > delete_size:
+                start_idx = random.randint(0, len(self.genome) - delete_size)
+                del self.genome[start_idx : start_idx + delete_size]
+
+        elif mutation_type == "insert" and len(self.genome) < MAX_GENOME_LENGTH:
+            # Insert 1-5 new random moves
+            insert_size = random.randint(1, MAX_INSERT_SIZE)
+            insert_pos = random.randint(0, len(self.genome))
+
+            # Create chunk of new moves (biased against backward moves)
+            new_chunk = []
+            for _ in range(insert_size):
+                if random.random() < BACKWARD_MUTATION_PENALTY:
+                    # Bias toward forward/neutral moves
+                    valid_actions = [
+                        a for a in range(len(MOVEMENTS)) if a not in BACKWARD_ACTIONS
+                    ]
+                    new_chunk.append(random.choice(valid_actions))
+                else:
+                    new_chunk.append(random.randint(0, len(MOVEMENTS) - 1))
+
+            # Insert the chunk
+            self.genome[insert_pos:insert_pos] = new_chunk
+
     def crossover(self, other):
-        point = random.randint(0, len(self.genome))
-        child_genome = self.genome[:point] + other.genome[point:]
+        """Crossover with possible different genome lengths"""
+        # Choose crossover point for first parent
+        point1 = random.randint(0, len(self.genome))
+
+        # Choose crossover point for second parent (adjusted for length)
+        point2 = random.randint(0, len(other.genome))
+
+        # Create child by combining segments
+        child_genome = self.genome[:point1] + other.genome[point2:]
+
         return MarioIndividual(child_genome)
 
     def copy(self):
@@ -101,6 +159,7 @@ class MarioIndividual:
         new_individual.max_x = self.max_x
         new_individual.steps_survived = self.steps_survived
         new_individual.total_frames = self.total_frames
+        new_individual.speed_score = self.speed_score
         new_individual.generation = self.generation
         new_individual.id = self.id
         return new_individual
@@ -110,6 +169,45 @@ class MarioIndividual:
         with open(filename, "wb") as f:
             pickle.dump(self, f)
         print(f"  Saved individual to {filename}")
+        print(f"  Genome length: {len(self.genome)}")
+
+
+def calculate_fitness(max_x, actions_taken, total_frames=None):
+    """
+    Calculate fitness based on distance and time/speed.
+
+    Args:
+        max_x: Maximum x position reached
+        actions_taken: Number of actions executed
+        total_frames: Total game frames (if available, use for more precise time)
+
+    Returns:
+        fitness, speed_score
+    """
+    # Base distance score
+    distance_score = max_x * DISTANCE_WEIGHT
+
+    # Calculate speed (distance per action or per frame)
+    if total_frames is not None and total_frames > 0:
+        # More precise: use actual frames/time
+        speed = max_x / total_frames
+        speed_score = speed * SPEED_WEIGHT * 100  # Scale to be meaningful
+        speed_metric = f"{speed:.3f} distance/frame"
+    else:
+        # Use actions as proxy for time
+        actions = max(actions_taken, 1)  # Avoid division by zero
+        speed = max_x / actions
+        speed_score = speed * SPEED_WEIGHT * 10  # Scale to be meaningful
+        speed_metric = f"{speed:.2f} distance/action"
+
+    # Completion bonus for reaching the end of the level
+    # Level 1-1 ends around ~3072 units
+    completion_bonus = COMPLETION_BONUS if max_x > 3000 else 0
+
+    # Final fitness
+    fitness = distance_score + speed_score + completion_bonus
+
+    return fitness, speed_score
 
 
 def evaluate_fitness(individual, render=False, record=False):
@@ -135,6 +233,7 @@ def evaluate_fitness(individual, render=False, record=False):
     action_index = 0
     total_frames = 0
     max_x = 0
+    start_time = time.time() if render else None
 
     # For recording
     frames = [] if record else None
@@ -218,16 +317,24 @@ def evaluate_fitness(individual, render=False, record=False):
         env.close()
 
         if render:
+            elapsed_time = time.time() - start_time if start_time else 0
             print(f"\nGame Over - Position: {max_x}")
+            print(f"Time Elapsed: {elapsed_time:.2f} seconds")
+            print(f"Actions Used: {action_index}")
+            print(f"Total Frames: {total_frames}")
 
-    # Update stats only in non-render mode
+    # Update stats with new fitness calculation
     if not render:
-        individual.fitness = max_x + action_index * 0.1
+        # Calculate fitness using both distance and speed
+        fitness, speed_score = calculate_fitness(max_x, action_index, total_frames)
+
+        individual.fitness = fitness
         individual.max_x = max_x
         individual.steps_survived = action_index
         individual.total_frames = total_frames
+        individual.speed_score = speed_score
 
-    return max_x + action_index * 0.1, frames
+    return fitness, frames
 
 
 def create_initial_population(size):
@@ -278,8 +385,23 @@ def save_best_individual(individual, generation, fitness_history):
         f.write(f"Generation: {generation}\n")
         f.write(f"Fitness: {individual.fitness:.2f}\n")
         f.write(f"Distance: {individual.max_x}\n")
+        f.write(f"Speed Score: {individual.speed_score:.2f}\n")
         f.write(f"Actions Taken: {individual.steps_survived}\n")
         f.write(f"Total Frames: {individual.total_frames}\n")
+        f.write(f"Genome Length: {len(individual.genome)}\n")
+
+        # Calculate and display actual speed
+        if individual.total_frames > 0:
+            actual_speed = individual.max_x / individual.total_frames
+            f.write(f"Actual Speed: {actual_speed:.3f} distance/frame\n")
+
+        f.write(f"\nFitness Components:\n")
+        f.write(f"  Distance Score: {individual.max_x * DISTANCE_WEIGHT:.2f}\n")
+        f.write(f"  Speed Score: {individual.speed_score:.2f}\n")
+        f.write(
+            f"  Completion Bonus: {COMPLETION_BONUS if individual.max_x > 3000 else 0}\n"
+        )
+
         f.write(f"\nFitness History:\n")
         for i, fit in enumerate(fitness_history):
             f.write(f"  Gen {i + 1}: {fit:.2f}\n")
@@ -311,14 +433,27 @@ def print_best_individual(individual, generation):
         if base_action and base_action.startswith("left"):
             backward_count += 1
 
+    # Calculate actual speed
+    actual_speed = 0
+    if individual.total_frames > 0:
+        actual_speed = individual.max_x / individual.total_frames
+    elif individual.steps_survived > 0:
+        actual_speed = individual.max_x / individual.steps_survived
+
     print(f"\n{'=' * 60}")
     print(f"GENERATION {generation} - BEST INDIVIDUAL (ID: {individual.id})")
     print(f"{'=' * 60}")
     print(f"Fitness: {individual.fitness:.2f}")
-    print(f"Distance: {individual.max_x} units")
-    print(f"Actions Taken: {individual.steps_survived}")
-    print(f"Total Game Frames: {individual.total_frames}")
-    print(f"Backward Moves (first 50): {backward_count}")
+    print(f"  Distance Score: {individual.max_x * DISTANCE_WEIGHT:.2f}")
+    print(f"  Speed Score: {individual.speed_score:.2f}")
+    print(f"  Completion Bonus: {COMPLETION_BONUS if individual.max_x > 3000 else 0}")
+    print(f"\nPerformance:")
+    print(f"  Distance: {individual.max_x} units")
+    print(f"  Actions Taken: {individual.steps_survived}")
+    print(f"  Total Frames: {individual.total_frames}")
+    print(f"  Speed: {actual_speed:.3f} units/frame")
+    print(f"  Genome Length: {len(individual.genome)}")
+    print(f"  Backward Moves (first 50): {backward_count}")
 
     if jump_heights:
         avg_jump = sum(jump_heights) / len(jump_heights)
@@ -375,12 +510,20 @@ def run_genetic_algorithm(generations=50):
     """Main genetic algorithm loop"""
     print("=" * 60)
     print("SUPER MARIO BROS - GENETIC PROGRAMMING")
-    print("WITH BIASED MUTATION AGAINST BACKWARD MOVES")
+    print("WITH DISTANCE + SPEED OPTIMIZATION")
     print("=" * 60)
 
+    print(f"\nFitness Configuration:")
+    print(f"  Distance Weight: {DISTANCE_WEIGHT}")
+    print(f"  Speed Weight: {SPEED_WEIGHT}")
+    print(f"  Completion Bonus: {COMPLETION_BONUS}")
     print(f"\nPopulation Size: {POPULATION_SIZE}")
-    print(f"Genome Length: {SEQUENCE_LENGTH} actions")
-    print(f"Mutation Rate: {MUTATION_RATE * 100}%")
+    print(f"Initial Genome Length: {SEQUENCE_LENGTH} actions")
+    print(f"Point Mutation Rate: {MUTATION_RATE * 100}%")
+    print(f"Structural Mutation Rate: {STRUCTURAL_MUTATION_RATE * 100}%")
+    print(f"  Delete Chunk Size: 1-{MAX_DELETE_SIZE} moves")
+    print(f"  Insert Chunk Size: 1-{MAX_INSERT_SIZE} moves")
+    print(f"  Min/Max Genome Length: {MIN_GENOME_LENGTH}/{MAX_GENOME_LENGTH}")
     print(f"Backward Mutation Penalty: {BACKWARD_MUTATION_PENALTY * 100}% less likely")
     print(f"Jump Durations: {JUMP_DURATIONS} frames")
     print(f"Total Actions: {len(MOVEMENTS)}")
@@ -391,6 +534,8 @@ def run_genetic_algorithm(generations=50):
     population = create_initial_population(POPULATION_SIZE)
     best_fitness_history = []
     best_individual_history = []
+    length_history = []
+    speed_history = []
 
     for generation in range(generations):
         print(f"\n--- Generation {generation + 1} ---")
@@ -409,12 +554,34 @@ def run_genetic_algorithm(generations=50):
         best_fitness = fitnesses[best_idx]
         best_fitness_history.append(best_fitness)
         best_individual_history.append(best_individual)
+        length_history.append(len(best_individual.genome))
+
+        # Track speed of best individual
+        if best_individual.total_frames > 0:
+            speed_history.append(best_individual.max_x / best_individual.total_frames)
+        else:
+            speed_history.append(0)
 
         avg_fitness = np.mean(fitnesses)
+        avg_length = np.mean([len(ind.genome) for ind in population])
+
+        # Calculate average speed of population
+        avg_speed = 0
+        speed_count = 0
+        for ind in population:
+            if ind.total_frames > 0:
+                avg_speed += ind.max_x / ind.total_frames
+                speed_count += 1
+        avg_speed = avg_speed / speed_count if speed_count > 0 else 0
+
         print(f"\n  Generation {generation + 1} Results:")
         print(f"    Best Fitness: {best_fitness:.2f}")
         print(f"    Avg Fitness: {avg_fitness:.2f}")
         print(f"    Best Distance: {best_individual.max_x}")
+        print(f"    Best Speed: {speed_history[-1]:.3f} units/frame")
+        print(f"    Avg Speed: {avg_speed:.3f} units/frame")
+        print(f"    Best Genome Length: {len(best_individual.genome)}")
+        print(f"    Avg Genome Length: {avg_length:.1f}")
 
         survivors = select_survivors(population, ELITE_SIZE)
         print(f"    Survivors: {len(survivors)}")
@@ -443,6 +610,15 @@ def run_genetic_algorithm(generations=50):
     print(f"\nFitness History:")
     for i, fitness in enumerate(best_fitness_history):
         print(f"  Gen {i + 1}: {fitness:.2f}")
+
+    print(f"\nSpeed Evolution (units/frame):")
+    for i, speed in enumerate(speed_history):
+        if speed > 0:
+            print(f"  Gen {i + 1}: {speed:.3f}")
+
+    print(f"\nGenome Length Evolution:")
+    for i, length in enumerate(length_history):
+        print(f"  Gen {i + 1}: {length}")
 
     # Save final best
     saved_file = save_best_individual(final_best, "FINAL", best_fitness_history)
@@ -480,6 +656,8 @@ def load_best_individual(filename):
     print(f"  Generation: {individual.generation}")
     print(f"  Fitness: {individual.fitness:.2f}")
     print(f"  Distance: {individual.max_x}")
+    print(f"  Speed Score: {individual.speed_score:.2f}")
+    print(f"  Genome Length: {len(individual.genome)}")
     return individual
 
 

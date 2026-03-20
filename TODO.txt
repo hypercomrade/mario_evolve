@@ -1,3 +1,5 @@
 Add segment duplication
 Change fitness to allow more offspring for those with drastically better stats
-Add genome extensions and deletions
+Add genome extensions and deletions (Change extension to mostly occur on the end)
+Reward 1st, 2nd, and 3rd best with extra copies of themselves in the next generation
+Potential penalty for dying before genome finishes
