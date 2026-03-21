@@ -525,7 +525,7 @@ def write_individual_to_file(individual, individuals_file):
     individuals_file.write("\n")
     individuals_file.flush()
 
-def write_new_generation(individuals_file, best_individual):
+def conclude_run(individuals_file, best_individual):
     individuals_file.write("--------------------------------------------------------------\n")
     write_individual_to_file(best_individual, individuals_file)
     individuals_file.write("--------------------------------------------------------------\n")
